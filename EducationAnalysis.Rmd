@@ -1,0 +1,234 @@
+---
+title: "ReproducibleAssignmentQuestion2"
+output: html_document
+date: "2024-12-13"
+---
+
+```{r setup,  warning = FALSE, results='hide', message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(palmerpenguins)
+library(here)
+library(janitor)
+library(Hmisc)
+library(tidytuesdayR)
+library(lattice)
+library(misty)
+library(ggpubr)
+library(rstatix)
+library(plotrix)
+library(ggpubr)
+library(ggpmisc)
+library(car)
+```
+
+# QUESTION 2: Data Pipeline
+Write a data analysis pipeline in your .rmd RMarkdown file. You should be aiming to write a clear explanation of the steps as well as clear code.
+
+## Introduction
+
+For this analysis I decided to use an external dataset from the package tidytuesdayR, namely their data set from 2024-01-23. The dataset is comprised of data from the Office Of National Statistics compiling census data about towns in the UK and associated educational results. I chose this data because it provided the opportunity to explore some interesting trends in British educational outcomes from a large dataset.
+
+#### Load Data
+
+```{r, include=TRUE, warning = FALSE, results='hide', message=FALSE}
+
+#load data
+tuesdata <- tidytuesdayR::tt_load('2024-01-23')
+data <- tuesdata$english_education
+
+```
+
+#### Clean Data
+
+Cleaning the data is important to remove unnecessary columns, as well as to remame some in a more useful way. It was also helpful to trim the town names to remove the unnecessary "BUA" (built up area) at the end of each.
+
+```{r}
+#first let's remove the columns we don't need
+data_trim <- subset(data, select = c(town11nm,population_2011,size_flag,rgn11nm,coastal,coastal_detailed,income_flag,university_flag,education_score))
+
+#rename some columns 
+new_names <- c(town_name = "town11nm", region = "rgn11nm")
+data_trim <- rename(data_trim, all_of(new_names))
+
+#shorten town names
+data_trim$town_name <- word(data_trim$town_name, 1,-2)
+```
+
+I then decided to explore the relationship between town size and educational outcome. I explored this with a plot that showed both the education score for each town, its town size category and the mean education score for each town size. 
+
+#### Create an Exploratory Figure
+```{r, warning = FALSE, warning = FALSE, fig.align="centre", fig.height = 8, fig.width=10, fig.cap="Figure 1: Exploratory figure showing a potential relationship between town size and education score"}
+#exploratory figure of the relationship between town size and education score
+
+#vector of town sizes in order
+town_sizes <- c("Not BUA", "Small Towns", "Other Small BUAs", "Medium Towns", "Outer london BUA", "Large Towns", "City", "Inner London BUA")
+
+#jitter plot relationship between town size and education score + spread of the data
+exploratory_plot <- ggplot(data_trim, aes(x = factor(size_flag, town_sizes), y = education_score, color = size_flag)) +
+  geom_jitter() +
+  stat_summary(fun.y= mean, fun.ymin=mean, fun.ymax=mean, geom="crossbar", width=0.7, color="black", size = 0.1)+
+  theme(legend.position = "none")+
+  labs(title="Plot of Town Size vs Education Score",
+        x ="Town Size", y = expression(atop(bold("Education Score"),atop(italic("Black Line = Mean")))))+
+  coord_flip()
+exploratory_plot
+```
+
+This exploratory figure shows some difference in mean between the mean education scores of different town sizes. However, it also shows greatly variable spread of the data as well as sample size. Further analysis is required to determine if the difference between means is significant.
+
+#### Save the figure
+```{r, include=TRUE, warning = FALSE, results='hide', message=FALSE}
+png("exploratory_plot.png")
+plot(exploratory_plot)
+dev.off()
+```
+
+## Hypothesis
+
+From this exploratory plot, I determined my hypothesis that there is a significant difference between the mean educational scores of different size categories of town. In particular, I predicted that larger towns would have lower educational scores than smaller towns.
+
+Null Hypothesis: there is no difference between the mean educational scores of different size categories of town.
+
+Alternative Hypothesis: there is a significant difference between the mean educational scores of different size categories of town.
+
+## Stats Method
+
+The normal statistical test for comparing the means of more than 2 groups would be the ANOVA test, but we need to check the assumptions before conducting this test. Additionally, we saw in the data visualisation that some town size categories in this dataset have a sample size of 1, meaning they are not useful in statistical analysis.
+
+#### Trimming Data
+
+```{r}
+#remove categories with only one row (categories with a sample size of 1)
+data_trim_size <-  data_trim %>%
+  group_by(size_flag) %>%
+  filter(n() > 1) %>%
+  ungroup()
+```
+
+#### Checking Assumption 1: Normal distribution of education score in each size category
+
+```{r}
+#compute ANOVA so we can check the assumption
+res_aov <- aov(education_score ~ size_flag,
+  data = data_trim_size
+)
+
+#check normality with plots
+par(mfrow = c(1, 2)) # combine plots
+# histogram
+hist(res_aov$residuals)
+# QQ-plot
+qqPlot(res_aov$residuals,
+  id = FALSE # id = FALSE to remove point identification
+)
+
+#use statistical normality test as well
+shapiro.test(res_aov$residuals)
+```
+Results from plots: histogram follows a normal distribution and QQ-plot follows roughly straight line with residuals falling in confidence interval. This suggests that the assumption of normality is met.
+
+Results from Shapiro test: p<0.05 so we can reject null hypothesis of a non-normal distribution. The assumption of normality is definitely met.
+
+## Checking Assumption 2: Variance of educational score is homogenous
+
+```{r, include=TRUE, warning = FALSE, message=FALSE}
+#check homogeneity with plots
+dotplot(education_score ~ size_flag,
+  data = data_trim_size
+)
+
+#check with a statistical test
+leveneTest(education_score ~ size_flag,
+  data = data_trim_size
+)
+```
+
+Result from plots: variance of educational score looks like it varies a lot between size categories.
+
+Result from Levene Test: result is significant (p<0.05) so we can reject the null hypothesis that variances are equal between species. The variance does not show homogeneity, so the assumption is violated.
+
+Because the assumption of equal variance is violated, we need to conduct a Welch's test.
+
+#### Run a statistical test
+
+```{r}
+#Welch's test
+res_welch <- oneway.test(education_score ~ size_flag,
+  data = data_trim_size,
+  var.equal = FALSE # assuming nonequal variances
+)
+print(res_welch)
+```
+
+The p-value < 0.05 so we can reject the null hypothesis that the means of all groups are equal. However, the question is now which pairs of size categories actually have significantly different mean education scores? We can investigate this with a Games-Howell test.
+
+```{r}
+res_ght <- games_howell_test(data_trim_size, education_score ~ size_flag, conf.level = 0.95, detailed = FALSE)
+print(res_ght)
+```
+
+The Games-Howell test shows us that there are significant differences between the mean education scores of the following pairs: city vs large town, city vs medium town, city vs small town and large vs small town.
+
+## Results
+
+#### Results Figure
+
+```{r, warning = FALSE, fig.align="centre", fig.height = 8, fig.width=10, fig.cap="Figure 2: This results figure shows that cities have the lowest mean educational score and small towns have the largest. The trend shown is that mean educational score increases with town size. The Games-Howell pairwise statistical test shows that there are significant differences between the means educational scores of cities vs large towns (adjusted p-value = 3.81e-04), cities vs medium towns (adjusted p-value = 1.49e-06), cities vs small towns (adjusted p-value = 2.52e-08) and large towns vs small towns (adjusted p-value = 9.05e-04). It is noteworthy that there is no significant difference between the mean educational scores of small and medium towns (adjusted p-value = 9.50e-02), and between large and medium towns (adjusted p-value = 2.60e-01)."}
+#create a vector of town sizes in a useful order
+town_sizes_trim <- c("City", "Large Towns", "Medium Towns", "Small Towns")
+
+#calculate standard error
+data_trim_size_summary <- data_trim_size %>%
+  group_by(size_flag) %>%
+  summarise(
+    sd = sd(education_score, na.rm = TRUE),
+    se = std.error(education_score, na.rm=TRUE),
+    mean_education_score = mean(education_score)
+  )
+
+#format games howell results to plot on graph
+comparison_results <- data.frame(
+  group1 = res_ght$group1,
+  group2 = res_ght$group2,
+  p_value = res_ght$p.adj  
+)
+
+#plot a bar plot with error bars for standard error and brackets for significantly different pairs of means
+
+results_plot <- ggplot(data_trim_size_summary, aes(x=factor(size_flag, town_sizes_trim), y=mean_education_score, fill = size_flag)) +
+  geom_bar(stat="identity")+
+  #geom_text(aes(label=round(mean_education_score, 2)), y = c(1,1,1,0), size = 3)+
+  labs(title="Plot Town Size vs Mean Education Score",
+        x ="Town Size", y = "Mean Education Score")+
+  theme(legend.position = "none")+
+geom_errorbar(aes(ymin = mean_education_score - se, ymax = mean_education_score + se), width = 0.1) +
+  scale_y_continuous(breaks=seq(-3, 1.5, by = 0.5))+
+#    geom_pwc(group = data_trim_size$size_flag, label = "p.adj.signif",
+#    method = "games_howell_test",
+#    bracket.nudge.y = 0.02, hide.ns = TRUE, y.position = 0.5, step.increase = 0.01, dodge = 0.8, size = 0.5, remove.bracket = TRUE) +
+   geom_segment(aes(x = c(1,1,1,2), y = c(0.5,0.7,0.9,1.1), xend = c(2,3,4,4), yend = c(0.5,0.7,0.9,1.1)))+
+  annotate("text", x = c(1.5,2,2.5,3), y = c(0.53,0.73,0.93, 1.13), label = c("***","****","****","***"))
+results_plot
+```
+NOTE: the method of plotting significant brackets between bars is not very reproducible. The geom_pwc() function is much better for this as it directly uses the data from the Games-Howell test but the brackets produced are huge and their size cannot be adjusted. The use of these brackets makes the actual size of the bars impossible to see.
+
+##### Save the figure
+
+```{r, include=TRUE, warning = FALSE, results='hide', message=FALSE}
+png("results_plot.png")
+plot(results_plot)
+dev.off()
+```
+
+## Discussion
+
+The Welch's test result suggests that we can reject the null hypothesis and supports the alternative hypothesis that the mean education scores of different categories of town sizes are not the same. Furthermore, the Games-Howell test result shows that there are signficant differences between the mean education score of the city category and all other categories and between large and small towns. 
+
+A particularly interesting elements of the results is that there is no significant difference between small and medium towns, and between medium and large towns. This fails to support the hypothesis of a relationship between town size and education score. Instead, the results suggest that cities have exceptionally low education scores and that there is some relationship between town size and education score, but this relationship is not consistent across size categories.
+
+However, significant p-values are not the only method of measuring difference, and it is important to note that there is no overlap between the standard errors of any of the mean educational scores for each size of town, suggesting that there is some trend even if it is not significant.
+
+## Conclusion
+
+In conclusion, this analysis suggests that cities have exceptionally low educational scores, as calculated by the ONS. There is some suggestion of a trend of declining educational scores with larger town sizes, but more data is needed to provide further support. In particular, a correlative study of town population with educational score would be a useful direction for future analysis.
